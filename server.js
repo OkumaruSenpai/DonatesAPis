@@ -9,16 +9,21 @@ const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY || "0fbfa053-a41d-487b-b5f3-930d505d3a0e";
 const MAX_GAMES = 10;
 
-// Limit requests for protection (10 por minuto)
+// Lista de proxies a probar (en orden de preferencia)
+const proxies = [
+  'https://games.roproxy.com',
+  'https://games.rproxy.io',
+  'https://api.bloxproxy.xyz/games',
+  'https://games.roblox-api.com',
+];
+
 app.use(rateLimit({ windowMs: 60 * 1000, max: 10 }));
 
-// Simple logger
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} ${req.method} ${req.url}`);
   next();
 });
 
-// API Key check for security
 app.use((req, res, next) => {
   if (req.path.startsWith('/gamepasses/')) {
     const key = req.header('x-api-key');
@@ -27,12 +32,21 @@ app.use((req, res, next) => {
   next();
 });
 
-const GAMES_URL = (userId, cursor) => 
-  `https://games.roproxy.com/v2/users/${userId}/games?accessFilter=Public&limit=50${cursor ? '&cursor=' + encodeURIComponent(cursor) : ''}`;
-const GAMEPASSES_URL = (gameId, cursor) => 
-  `https://games.roproxy.com/v1/games/${gameId}/game-passes?sortOrder=Asc&limit=50${cursor ? '&cursor=' + encodeURIComponent(cursor) : ''}`;
+// Función para probar todos los proxies y usar el primero que responde bien
+async function tryAllProxies(urlPath) {
+  for (let base of proxies) {
+    try {
+      const resp = await axios.get(base + urlPath);
+      if (resp.status === 200 && resp.data) return resp.data;
+    } catch (err) {
+      // Si es error, simplemente prueba el siguiente
+      continue;
+    }
+  }
+  throw new Error("Ningún proxy respondió correctamente.");
+}
 
-// Endpoint principal con paginación
+// Endpoint principal con paginación y multi-proxy
 app.get('/gamepasses/:userId', async (req, res) => {
   const userId = req.params.userId;
   const offset = parseInt(req.query.offset) || 0;
@@ -42,16 +56,18 @@ app.get('/gamepasses/:userId', async (req, res) => {
   let allPasses = cache.get(cacheKey);
 
   if (!allPasses) {
-    let games = [], cursor = null;
+    let games = [];
+    let gamesCursor = null;
     try {
       do {
-        let response = await axios.get(GAMES_URL(userId, cursor));
-        games = games.concat((response.data.data || []).map(game => game.id));
-        cursor = response.data.nextPageCursor;
-      } while (cursor && games.length < MAX_GAMES);
+        let path = `/v2/users/${userId}/games?accessFilter=Public&limit=50${gamesCursor ? '&cursor=' + encodeURIComponent(gamesCursor) : ''}`;
+        let data = await tryAllProxies(path);
+        games = games.concat((data.data || []).map(game => game.id));
+        gamesCursor = data.nextPageCursor;
+      } while (gamesCursor && games.length < MAX_GAMES);
       games = games.slice(0, MAX_GAMES);
     } catch (err) {
-      return res.status(500).json({ error: "Error obteniendo universos: " + err.message });
+      return res.status(502).json({ error: "Error obteniendo universos: " + err.message });
     }
 
     let passes = [];
@@ -59,9 +75,10 @@ app.get('/gamepasses/:userId', async (req, res) => {
       await Promise.all(games.map(async (gameId) => {
         let passCursor = null;
         do {
-          let response = await axios.get(GAMEPASSES_URL(gameId, passCursor));
-          let data = response.data.data || [];
-          passes = passes.concat(data.filter(gp => gp.price && gp.price > 0)
+          let path = `/v1/games/${gameId}/game-passes?sortOrder=Asc&limit=50${passCursor ? '&cursor=' + encodeURIComponent(passCursor) : ''}`;
+          let data = await tryAllProxies(path);
+          let arr = data.data || [];
+          passes = passes.concat(arr.filter(gp => gp.price && gp.price > 0)
             .map(gp => ({
               id: gp.id,
               name: gp.displayName || gp.name,
@@ -70,11 +87,11 @@ app.get('/gamepasses/:userId', async (req, res) => {
               imageUrl: gp.imageUrl || null,
               url: `https://www.roblox.com/game-pass/${gp.id}`
             })));
-          passCursor = response.data.nextPageCursor;
+          passCursor = data.nextPageCursor;
         } while (passCursor);
       }));
     } catch (err) {
-      return res.status(500).json({ error: "Error obteniendo GamePasses: " + err.message });
+      return res.status(502).json({ error: "Error obteniendo GamePasses: " + err.message });
     }
     passes.sort((a, b) => a.price - b.price);
     cache.set(cacheKey, passes);
@@ -94,6 +111,11 @@ app.get('/gamepasses/:userId', async (req, res) => {
 app.get('/', (req, res) => {
   res.send('API para obtener GamePasses de un usuario de Roblox. Usa /gamepasses/<userId>?offset=0&limit=50 con el header x-api-key.');
 });
+
+app.listen(PORT, () => {
+  console.log(`API GamePasses escuchando en puerto ${PORT}`);
+});
+
 
 app.listen(PORT, () => {
   console.log(`API GamePasses escuchando en puerto ${PORT}`);
