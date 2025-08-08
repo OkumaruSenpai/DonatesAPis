@@ -6,7 +6,7 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 const cache = new NodeCache({ stdTTL: 600 });
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.API_KEY || "0fbfa053-a41d-487b-b5f3-930d505d3a0e";
+const API_KEY = process.env.API_KEY || "5c33c9b1-0d17-47a4-ad9c-a4c92fd253f4";
 const MAX_GAMES = 10;
 
 // Lista de proxies a probar (en orden de preferencia)
